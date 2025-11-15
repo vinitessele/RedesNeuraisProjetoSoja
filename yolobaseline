@@ -1,0 +1,52 @@
+from ultralytics import YOLO
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+
+# 1. Carregar modelo (pré-treinado no COCO, detecta plantas genéricas)
+model = YOLO("yolov8n.pt")
+
+# 2. Carregar imagem
+img_path = r"D:\GoogleDriver\VNT - Sistemas\ZeraBank\imagens\separar\20251007_120225.jpg"
+img = cv2.imread(img_path)
+
+# 3. Fazer a detecção
+results = model(img, conf=0.25)
+
+# 4. Obter as posições (x1, y1, x2, y2)
+boxes = []
+for r in results:
+    if r.boxes is not None:
+        boxes = r.boxes.xyxy.cpu().numpy()
+
+# Se não detectar nada, evitar erro
+if len(boxes) == 0:
+    print("Nenhuma planta detectada.")
+else:
+    # 5. Ordenar por posição X (planta por planta)
+    boxes = sorted(boxes, key=lambda x: x[0])
+
+    # 6. Calcular distâncias entre plantas (em pixels)
+    distancias = np.diff([b[0] for b in boxes])
+
+    # Define limite do que é considerado "falha"
+    media = np.mean(distancias)
+    limite_falha = media * 1.8  # ajuste conforme sua imagem
+
+    # 7. Identificar falhas
+    falhas = [i for i, d in enumerate(distancias) if d > limite_falha]
+    print(f"Falhas detectadas: {len(falhas)}")
+
+    # 8. Desenhar retângulos vermelhos nas falhas
+    for i in falhas:
+        x1 = int(boxes[i][0])
+        x2 = int(boxes[i + 1][0])
+        cv2.rectangle(img, (x1, 0), (x2, img.shape[0]), (0, 0, 255), 3)
+
+    # 9. Mostrar imagem com as falhas
+    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    plt.figure(figsize=(10, 8))
+    plt.imshow(img_rgb)
+    plt.axis('off')
+    plt.title(f"Falhas detectadas: {len(falhas)}")
+    plt.show()

@@ -1,219 +1,207 @@
-import os
-import io
-import joblib
-import numpy as np
-import cv2
+# ============================================================
+# 🚀 API Flask + PyTorch + Ngrok — Classificação Estágios da Soja
+# ============================================================
+
 from flask import Flask, request, jsonify, send_from_directory
-from PIL import Image
-from skimage.feature import hog, local_binary_pattern
-import tensorflow as tf
-from tensorflow.keras.models import load_model
-from tensorflow.keras.applications.resnet50 import preprocess_input
 import torch
-from transformers import ViTModel, ViTImageProcessor
+import torch.nn as nn
+import torch.nn.functional as F
+from PIL import Image
+import io
+import os
+import timm
+import torchvision.transforms as transforms
+import torchvision.models as models
+from torchvision.models import efficientnet_v2_s, EfficientNet_V2_S_Weights
+from pyngrok import ngrok, conf
 
-# === ngrok ===
-from pyngrok import ngrok
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-# =========================================
-# 🚀 CONFIGURAÇÃO
-# =========================================
-app = Flask(__name__, static_folder=".", static_url_path="")
+# ============================================================
+# PATHS
+# ============================================================
+UPLOAD_FOLDER = r"D:\GoogleDriver\VNT - Sistemas\ZeraBank\imagens\uploads"
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-BASE_PATH = r"D:\GoogleDriver\VNT - Sistemas\ZeraBank\modelo"
+RESNET_PATH = r"D:\GoogleDriver\VNT - Sistemas\ZeraBank\modelo\modeloZera\resnet50_modeloZera.pth"
+VIT_PATH = r"D:\GoogleDriver\VNT - Sistemas\ZeraBank\modelo\modeloZera\vit_modeloZera.pth"
+EFFICIENTNET_PATH = r"D:\GoogleDriver\VNT - Sistemas\ZeraBank\modelo\modeloZera\efficientnetv2_modeloZera.pth"
+SWIN_PATH = r"D:\GoogleDriver\VNT - Sistemas\ZeraBank\modelo\modeloZera\swin_modeloZera.pth"
+ConvNeXt_PATH = r"D:\GoogleDriver\VNT - Sistemas\ZeraBank\modelo\modeloZera\convnext_modeloZera.pth"
+VIT_PATH2 = r"D:\GoogleDriver\VNT - Sistemas\ZeraBank\modelo\modeloZeraIndividual\vit_modeloZera.pth"
+RESNET_PATH2 = r"D:\GoogleDriver\VNT - Sistemas\ZeraBank\modelo\modeloZeraIndividual\resnet50_modeloZera.pth"
 
-# Caminhos dos modelos
-SVM_HOGLBP_PATH = os.path.join(BASE_PATH, "modelo_hoglbp_aprimorado_svm_rbf.pkl")
-SCALER_PATH = os.path.join(BASE_PATH, "scaler_hoglbp_aprimorado.pkl")
-PCA_PATH = os.path.join(BASE_PATH, "pca_hoglbp_aprimorado.pkl")
-CLASSES_PATH = os.path.join(BASE_PATH, "classes.pkl")
 
-RF_RESNET_PATH = os.path.join(BASE_PATH, "randomforest_resnet_model.pkl")
-SCALER_RESNET_PATH = os.path.join(BASE_PATH, "resnet_scaler.pkl")
-PCA_RESNET_PATH = os.path.join(BASE_PATH, "resnet_pca.pkl")
-FEATURE_EXTRACTOR_PATH = os.path.join(BASE_PATH, "resnet_feature_extractor.h5")
-CLASSES_RESNET_PATH = os.path.join(BASE_PATH, "classes.npy")
+CLASSES = ['R1_R2','R3_R4', 'R5_R6', 'R7_R8', 'V1_V2', 'V3_V4', 'VE_VC']
+CLASSES2 = ['R1','R2','R3','R4', 'R5','R6', 'R7','R8','V1','V2', 'V3','V4','V5', 'VE','VC']
 
-VIT_BASE_PATH = os.path.join(BASE_PATH, "modelo_vit/vit_feature_extractor")
-VIT_RF_PATH = os.path.join(BASE_PATH, "modelo_vit/vit_randomforest.pkl")
-VIT_SCALER_PATH = os.path.join(BASE_PATH, "modelo_vit/vit_scaler.pkl")
-VIT_PCA_PATH = os.path.join(BASE_PATH, "modelo_vit/vit_pca.pkl")
-VIT_CLASSES_PATH = os.path.join(BASE_PATH, "modelo_vit/classes.npy")
+# ============================================================
+# CARREGAR MODELOS
+# ============================================================
 
-# =========================================
-# 🧠 CARREGAMENTO DOS MODELOS
-# =========================================
-print("🔄 Carregando modelos e pré-processadores...")
+# ---- ResNet50 ----
+resnet = models.resnet50(weights=None)
+num_ftrs_resnet = resnet.fc.in_features
+resnet.fc = nn.Linear(num_ftrs_resnet, len(CLASSES))
+resnet.load_state_dict(torch.load(RESNET_PATH, map_location=DEVICE))
+resnet.eval().to(DEVICE)
 
-# SVM + HOG/LBP
-svm_hoglbp = joblib.load(SVM_HOGLBP_PATH)
-scaler_hoglbp = joblib.load(SCALER_PATH)
-pca_hoglbp = joblib.load(PCA_PATH)
-if os.path.exists(CLASSES_PATH):
-    CLASSES = joblib.load(CLASSES_PATH)
-else:
-    CLASSES = ['R1_R2','R5_R6','R7_R8','V1_V2','V3_V4','VE_VC']
+# ---- ResNet50 ----
+resnet2 = models.resnet50(weights=None)
+num_ftrs_resnet2 = resnet2.fc.in_features
+resnet2.fc = nn.Linear(num_ftrs_resnet2, len(CLASSES2))
+resnet2.load_state_dict(torch.load(RESNET_PATH2, map_location=DEVICE))
+resnet2.eval().to(DEVICE)
 
-# Random Forest + ResNet
-rf_resnet = joblib.load(RF_RESNET_PATH)
-scaler_resnet = joblib.load(SCALER_RESNET_PATH)
-pca_resnet = joblib.load(PCA_RESNET_PATH)
-feature_extractor = load_model(FEATURE_EXTRACTOR_PATH)
-if os.path.exists(CLASSES_RESNET_PATH):
-    CLASSES_RF = np.load(CLASSES_RESNET_PATH)
-else:
-    CLASSES_RF = CLASSES
+# ---- ViT Base ----
+vit = timm.create_model("vit_base_patch16_224", pretrained=False, num_classes=len(CLASSES))
+vit.load_state_dict(torch.load(VIT_PATH, map_location=DEVICE))
+vit.eval().to(DEVICE)
 
-print("🔄 Carregando modelo Vision Transformer...")
+# ---- ViT Base ----
+vit2 = timm.create_model("vit_base_patch16_224", pretrained=False, num_classes=len(CLASSES2))
+vit2.load_state_dict(torch.load(VIT_PATH2, map_location=DEVICE))
+vit2.eval().to(DEVICE)
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# ---- EfficientNetV2 ----
+efficientnet = efficientnet_v2_s(weights=None)
+num_ftrs = efficientnet.classifier[1].in_features
+efficientnet.classifier[1] = nn.Linear(num_ftrs, len(CLASSES))
+efficientnet.load_state_dict(torch.load(EFFICIENTNET_PATH, map_location=DEVICE))
+efficientnet.eval().to(DEVICE)
 
-# Carregar processador e modelo ViT
-vit_processor = ViTImageProcessor.from_pretrained(VIT_BASE_PATH)
-vit_model = ViTModel.from_pretrained(VIT_BASE_PATH).to(device)
-vit_model.eval()
+# ---- Swin Transformer ----
+swin = timm.create_model(
+    "swin_tiny_patch4_window7_224",
+    pretrained=False,
+    num_classes=len(CLASSES)
+)
+swin.load_state_dict(torch.load(SWIN_PATH, map_location=DEVICE))
+swin.eval().to(DEVICE)
 
-# Carregar Random Forest, PCA e Scaler
-rf_vit = joblib.load(VIT_RF_PATH)
-scaler_vit = joblib.load(VIT_SCALER_PATH)
-pca_vit = joblib.load(VIT_PCA_PATH)
+# ---- ConvNeXt Base ----
+convnext = timm.create_model(
+    "convnext_base",
+    pretrained=False,                
+    num_classes=len(CLASSES)     
+)
 
-# Carregar classes
-if os.path.exists(VIT_CLASSES_PATH):
-    CLASSES_VIT = np.load(VIT_CLASSES_PATH, allow_pickle=True)
-else:
-    CLASSES_VIT = CLASSES_RF
+convnext.load_state_dict(
+    torch.load(ConvNeXt_PATH, map_location=DEVICE)
+)
 
-print("✅ Vision Transformer carregado com sucesso!")
-print("✅ Todos os modelos carregados!")
+convnext.eval().to(DEVICE)
 
-# =========================================
-# 🧮 FUNÇÕES AUXILIARES
-# =========================================
-def extract_vit_features(image_cv):
-    """Extrai embeddings CLS do Vision Transformer."""
-    image_rgb = cv2.cvtColor(image_cv, cv2.COLOR_BGR2RGB)
-    inputs = vit_processor(images=image_rgb, return_tensors="pt").to(device)
+# ============================================================
+# TRANSFORM
+# ============================================================
+transform = transforms.Compose([
+    transforms.Resize((224, 224)),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                         std=[0.229, 0.224, 0.225]),
+])
+
+
+# ============================================================
+# FUNÇÕES
+# ============================================================
+def predict_with_model(model, image_tensor):
     with torch.no_grad():
-        outputs = vit_model(**inputs)
-        features = outputs.last_hidden_state[:, 0, :].cpu().numpy()  # CLS token
-    return features
+        out = model(image_tensor)
+        probs = F.softmax(out, dim=1).cpu().numpy()[0]
+        idx = probs.argmax()
+        return CLASSES[idx], {CLASSES[i]: float(probs[i]) for i in range(len(CLASSES))}
 
-def read_image_file(stream):
-    return Image.open(stream).convert('RGB')
+def predict_with_model2(model, image_tensor):
+    with torch.no_grad():
+        out = model(image_tensor)
+        probs = F.softmax(out, dim=1).cpu().numpy()[0]
+        idx = probs.argmax()
+        return CLASSES2[idx], {CLASSES2[i]: float(probs[i]) for i in range(len(CLASSES2))}
+    
+def predict_image_all(image_bytes):
+    try:
+        image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    except:
+        return {"error": "Arquivo enviado não é uma imagem válida."}
 
-def extract_features_enhanced(image_cv):
-    gray = cv2.cvtColor(image_cv, cv2.COLOR_BGR2GRAY)
-    gray = cv2.GaussianBlur(gray, (3, 3), 0)
-    features = []
+    img_tensor = transform(image).unsqueeze(0).to(DEVICE)
 
-    hog_features, _ = hog(gray, orientations=18, pixels_per_cell=(16,16),
-                          cells_per_block=(2,2), block_norm='L2-Hys',
-                          visualize=True, transform_sqrt=True, feature_vector=True)
-    features.extend(hog_features)
+    r_pred, r_probs = predict_with_model(resnet, img_tensor)
+    v_pred, v_probs = predict_with_model(vit, img_tensor)
+    e_pred, e_probs = predict_with_model(efficientnet, img_tensor)
+    s_pred, s_probs = predict_with_model(swin, img_tensor)
+    c_pred, c_probs = predict_with_model(convnext, img_tensor)
+    v_pred2, v_probs2 = predict_with_model2(vit2, img_tensor)
+    r_pred2, r_probs2 = predict_with_model2(resnet2, img_tensor)
 
-    for radius in [1,2,3]:
-        n_points = 8*radius
-        lbp = local_binary_pattern(gray, n_points, radius, method='uniform')
-        lbp_hist,_ = np.histogram(lbp.ravel(), bins=np.arange(0, n_points+3), range=(0,n_points+2))
-        lbp_hist = lbp_hist.astype('float') / (lbp_hist.sum()+1e-6)
-        features.extend(lbp_hist)
+    return {
+        "2vit_base_patch16_224": {"predicted_class": v_pred2, "probabilities": v_probs2},
+        "2resnet50": {"predicted_class": r_pred2, "probabilities": r_probs2},
+        "resnet50": {"predicted_class": r_pred, "probabilities": r_probs},
+        "vit_base_patch16_224": {"predicted_class": v_pred, "probabilities": v_probs},
+        "efficientnet_v2_l": {"predicted_class": e_pred, "probabilities": e_probs},
+        "swin_tiny_patch4_window7_224": {"predicted_class": s_pred, "probabilities": s_probs},
+        "convnext_base": {"predicted_class": c_pred, "probabilities": c_probs},
+    }
 
-    hsv = cv2.cvtColor(image_cv, cv2.COLOR_BGR2HSV)
-    for i in range(3):
-        ch = hsv[:,:,i]
-        features.extend([np.mean(ch), np.std(ch), np.median(ch)])
-    for i in range(3):
-        hist = cv2.calcHist([hsv],[i],None,[16],[0,256])
-        hist = cv2.normalize(hist,hist).flatten()
-        features.extend(hist)
 
-    sobelx = cv2.Sobel(gray, cv2.CV_64F,1,0,ksize=3)
-    sobely = cv2.Sobel(gray, cv2.CV_64F,0,1,ksize=3)
-    grad_mag = np.sqrt(sobelx**2 + sobely**2)
-    features.extend([np.mean(grad_mag), np.std(grad_mag)])
+# ============================================================
+# API FLASK
+# ============================================================
+app = Flask(__name__)
 
-    return np.array(features).reshape(1,-1)
+@app.route("/predict", methods=["POST"])
+def predict():
+    if "file" not in request.files:
+        return jsonify({"error": "Envie um arquivo usando o campo 'file'"}), 400
 
-def extract_resnet_features(image_cv):
-    img_resized = cv2.resize(image_cv,(224,224))
-    img_rgb = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
-    img_array = np.expand_dims(img_rgb, axis=0)
-    img_preprocessed = preprocess_input(img_array)
-    feats = feature_extractor.predict(img_preprocessed, verbose=0)
-    return feats.flatten().reshape(1,-1)
+    file = request.files["file"]
+    image_bytes = file.read()
 
-# =========================================
-# 🌐 ROTAS
-# =========================================
+    # Realiza predição com todos os modelos
+    result = predict_image_all(image_bytes)
+
+    # Usa vit_base_patch16_224 como predição principal
+    predicted_class = result["vit_base_patch16_224"]["predicted_class"]
+
+    # Novo nome do arquivo
+    name, ext = os.path.splitext(file.filename)
+    new_filename = f"{name}__{predicted_class}{ext}"
+
+    # Salvar imagem com novo nome
+    save_path = os.path.join(UPLOAD_FOLDER, new_filename)
+    with open(save_path, "wb") as f:
+        f.write(image_bytes)
+
+    print(f"📁 Imagem salva como: {new_filename}")
+    print(f"Result:",result)
+    
+    return jsonify({
+        "original_filename": file.filename,
+        "saved_as": new_filename,
+        "predictions": result
+    })
+
+
 @app.route("/")
 def index():
     return send_from_directory('.', 'index.html')
 
-@app.route("/predict", methods=["POST"])
-def predict_both():
-    if 'file' not in request.files:
-        return jsonify({"error": 'Envie a imagem no campo "file".'}),400
 
-    file = request.files['file']
-    try:
-        pil_img = read_image_file(file.stream)
-        image_cv = np.array(pil_img)
-        image_cv = cv2.cvtColor(image_cv, cv2.COLOR_RGB2BGR)
-    except Exception as e:
-        return jsonify({"error": f"Erro ao ler imagem: {e}"}),400
+NGROK_TOKEN = "2rv3sOP99V8s5Onjx3V2PTD0LoP_3HutrBirTFVfWFjY9oLei"
 
-    # SVM + HOG/LBP
-    feats_svm = extract_features_enhanced(cv2.resize(image_cv,(128,128)))
-    feats_svm = scaler_hoglbp.transform(feats_svm)
-    feats_svm = pca_hoglbp.transform(feats_svm)
-    probs_svm = svm_hoglbp.predict_proba(feats_svm)[0]
-    idx_svm = int(np.argmax(probs_svm))
-    result_svm = {
-        "classe_prevista": CLASSES[idx_svm],
-        "acuracia": round(float(probs_svm[idx_svm])*100,2),
-        "percentuais": {CLASSES[i]: round(float(probs_svm[i])*100,2) for i in range(len(CLASSES))}
-    }
+conf.get_default().auth_token = NGROK_TOKEN
 
-    # Random Forest + ResNet
-    feats_rf = extract_resnet_features(image_cv)
-    feats_rf = scaler_resnet.transform(feats_rf)
-    feats_rf = pca_resnet.transform(feats_rf)
-    probs_rf = rf_resnet.predict_proba(feats_rf)[0]
-    idx_rf = int(np.argmax(probs_rf))
-    result_rf = {
-        "classe_prevista": CLASSES_RF[idx_rf],
-        "acuracia": round(float(probs_rf[idx_rf])*100,2),
-        "percentuais": {CLASSES_RF[i]: round(float(probs_rf[i])*100,2) for i in range(len(CLASSES_RF))}
-    }
-    # Vision Transformer + Random Forest
-    feats_vit = extract_vit_features(image_cv)
-    feats_vit = scaler_vit.transform(feats_vit)
-    feats_vit = pca_vit.transform(feats_vit)
-    probs_vit = rf_vit.predict_proba(feats_vit)[0]
-    idx_vit = int(np.argmax(probs_vit))
-    result_vit = {
-        "classe_prevista": CLASSES_VIT[idx_vit],
-        "acuracia": round(float(probs_vit[idx_vit]) * 100, 2),
-        "percentuais": {CLASSES_VIT[i]: round(float(probs_vit[i]) * 100, 2) for i in range(len(CLASSES_VIT))}
-    }
+print("🔌 Iniciando ngrok autenticado...")
+public_url = ngrok.connect(5000)
+print(f"🌍 URL pública da API: {public_url}")
 
-    print(">>> RESULTADO ViT:", result_vit)
-    print(">>> RESULTADO SVM:", result_svm)
-    print(">>> RESULTADO RF ResNet:", result_rf)
 
-    return jsonify({
-        "svm_hoglbp": result_svm,
-        "rf_resnet": result_rf,
-        "vit_randomforest": result_vit
-    })
-
-# =========================================
-# ▶️ EXECUÇÃO LOCAL COM NGROK
-# =========================================
+# ============================================================
+# RODAR SERVIDOR
+# ============================================================
 if __name__ == "__main__":
-    # Abrir túnel ngrok para porta 5000
-    public_url = ngrok.connect(5000)
-    print("🔗 URL pública ngrok:", public_url)
-
-    app.run(port=5000)
+    print("🚀 Servidor Flask rodando em http://127.0.0.1:5000")
+    app.run(host="0.0.0.0", port=5000, debug=False)

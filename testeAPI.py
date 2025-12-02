@@ -151,6 +151,7 @@ def predict():
 
     print(f"📁 Imagem salva como: {new_filename}")
     print(f"Result:",result)
+    
     return jsonify({
         "original_filename": file.filename,
         "saved_as": new_filename,
